@@ -1,0 +1,7 @@
+apiVersion: burghardt.tech/v1
+kind: Shadow
+metadata:
+  name: firstshadow
+spec:
+  podName: pod
+  image: image
