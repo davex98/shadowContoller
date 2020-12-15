@@ -1,11 +1,12 @@
 package main
 
 import (
+	controller "burghardt.tech/shadowController/controller"
 	"burghardt.tech/shadowController/pkg/generated/clientset/versioned"
-	"context"
+	informers "burghardt.tech/shadowController/pkg/generated/informers/externalversions"
 	"flag"
-	"fmt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubeinformers "k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,9 +20,15 @@ import (
 func main() {
 	kubeconfig := getConfig()
 
+	ch := SetupSignalHandler()
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
 		klog.Fatalf("Error building kubeconfig: %s", err.Error())
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("Error building kubernetes clientset: %s", err.Error())
 	}
 
 	clientset, err := versioned.NewForConfig(config)
@@ -29,27 +36,22 @@ func main() {
 		klog.Fatalf("Error building kubernetes clientset: %s", err.Error())
 	}
 
-	c := make(chan os.Signal)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		for {
-			listShadow(clientset)
-			time.Sleep(time.Second* 3)
-		}
-	}()
+	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
+	exampleInformerFactory := informers.NewSharedInformerFactory(clientset, time.Second*30)
 
-	<-c
-}
+	controller := controller.NewController(kubeClient, clientset,
+		kubeInformerFactory.Core().V1().Pods(),
+		exampleInformerFactory.Burghardt().V1().Shadows())
 
-func listShadow(clientset *versioned.Clientset) {
-	list, err := clientset.BurghardtV1().Shadows("").List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		klog.Fatalf("Error listing all databases: %v", err)
-	}
-	for _, sh := range list.Items {
-		fmt.Println("Shadow resource named: ", sh.Spec.PodName)
+
+	kubeInformerFactory.Start(ch)
+	exampleInformerFactory.Start(ch)
+
+	if err = controller.Run(2, ch); err != nil {
+		klog.Fatalf("Error running controller: %s", err.Error())
 	}
 }
+
 
 func getConfig() *string {
 	var kubeconfig *string
@@ -67,4 +69,20 @@ func homeDir() string {
 		return h
 	}
 	return os.Getenv("USERPROFILE")
+}
+
+
+func SetupSignalHandler() (stopCh <-chan struct{}) {
+
+	stop := make(chan struct{})
+	c := make(chan os.Signal, 2)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		close(stop)
+		<-c
+		os.Exit(1)
+	}()
+
+	return stop
 }

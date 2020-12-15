@@ -4,4 +4,4 @@ metadata:
   name: firstshadow
 spec:
   podName: pod
-  image: image
+  image: nginx
